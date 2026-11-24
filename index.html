@@ -23,8 +23,8 @@
       <h1 class="text-3xl font-bold tracking-tight bg-gradient-to-r from-purple-400 via-pink-500 to-rose-500 bg-clip-text text-transparent mb-6">amorgram</h1>
 
       <form id="login-form" class="w-full space-y-3">
-        <input type="text" id="login-identifier" placeholder="Kullanıcı adı veya e-posta" required class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-pink-500" />
-        <input type="password" id="login-password" placeholder="Şifre" required class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-pink-500" />
+        <input type="email" id="login-identifier" placeholder="E-posta adresin" required class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-pink-500" />
+        <input type="password" id="login-password" placeholder="Şifren" required class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-pink-500" />
         <button type="submit" id="login-btn" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-90 font-semibold text-sm py-2.5 rounded-lg transition">Giriş Yap</button>
       </form>
 
@@ -214,10 +214,14 @@
     let storyTimer = null;
 
     window.addEventListener('DOMContentLoaded', async () => {
-      const { data: { session } } = await sb.auth.getSession();
-      if (session && session.user) {
-        initApp(session.user);
-      } else {
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        if (session && session.user) {
+          initApp(session.user);
+        } else {
+          document.getElementById('auth-screen').classList.remove('hidden');
+        }
+      } catch (_) {
         document.getElementById('auth-screen').classList.remove('hidden');
       }
 
@@ -254,9 +258,6 @@
       const username = document.getElementById('reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_.]/g, '');
       const password = document.getElementById('reg-password').value;
 
-      const { data: existing } = await sb.from('profiles').select('id').eq('username', username).maybeSingle();
-      if (existing) return showAuthMsg('Bu kullanıcı adı zaten alınmış!');
-
       const { data, error } = await sb.auth.signUp({
         email,
         password,
@@ -270,23 +271,17 @@
       if (data.session && data.user) {
         initApp(data.user);
       } else {
-        showAuthMsg('Kayıt başarılı! E-posta doğrulama açıksa mailindeki bağlantıya tıkla, ardından giriş yap.', false);
+        showAuthMsg('Kayıt tamam! Şimdi e-posta ve şifrenle Giriş Yap kısmından giriş yapabilirsin.', false);
       }
     });
 
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      let identifier = document.getElementById('login-identifier').value.trim();
+      const email = document.getElementById('login-identifier').value.trim();
       const password = document.getElementById('login-password').value;
 
-      if (!identifier.includes('@')) {
-        const { data: prof } = await sb.from('profiles').select('email').eq('username', identifier.toLowerCase()).maybeSingle();
-        if (!prof) return showAuthMsg('Bu kullanıcı adına ait hesap bulunamadı.');
-        identifier = prof.email;
-      }
-
-      const { data, error } = await sb.auth.signInWithPassword({ email: identifier, password });
-      if (error) return showAuthMsg('Kullanıcı adı/şifre hatalı veya mail adresin henüz doğrulanmamış!');
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) return showAuthMsg('E-posta veya şifre hatalı (veya mail doğrulama açıksa mailindeki linke tıklaman gerekebilir).');
       initApp(data.user);
     });
 
@@ -298,15 +293,20 @@
       document.getElementById('app-screen').classList.remove('hidden');
       document.getElementById('app-screen').classList.add('flex');
 
-      const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
-      currentProfile = profile || {
+      currentProfile = {
         id: user.id,
         email: user.email,
-        username: user.email.split('@')[0],
-        full_name: '',
+        username: user.user_metadata?.username || user.email.split('@')[0],
+        full_name: user.user_metadata?.full_name || '',
         avatar_url: 'https://placehold.co/150x150/18181b/ec4899?text=A',
         bio: ''
       };
+
+      try {
+        const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
+        if (profile) currentProfile = { ...currentProfile, ...profile };
+      } catch (_) {}
+
       document.getElementById('nav-avatar').src = currentProfile.avatar_url;
 
       loadStories();
@@ -338,12 +338,6 @@
     }
 
     async function loadStories() {
-      const { data: stories } = await sb
-        .from('stories')
-        .select('*, profiles(username, avatar_url)')
-        .gt('expires_at', new Date().toISOString())
-        .order('created_at', { ascending: false });
-
       const bar = document.getElementById('stories-bar');
       bar.innerHTML = `
         <div onclick="openModal('story-modal')" class="flex flex-col items-center gap-1 cursor-pointer shrink-0">
@@ -354,20 +348,27 @@
           <span class="text-[11px] text-zinc-400">Hikayen</span>
         </div>
       `;
+      try {
+        const { data: stories } = await sb
+          .from('stories')
+          .select('*, profiles(username, avatar_url)')
+          .gt('expires_at', new Date().toISOString())
+          .order('created_at', { ascending: false });
 
-      const seenUsers = new Set();
-      (stories || []).forEach(st => {
-        if (seenUsers.has(st.user_id)) return;
-        seenUsers.add(st.user_id);
-        const div = document.createElement('div');
-        div.className = 'flex flex-col items-center gap-1 cursor-pointer shrink-0';
-        div.onclick = () => viewStory(st);
-        div.innerHTML = `
-          <div class="story-ring"><img src="${st.profiles.avatar_url}" class="w-[60px] h-[60px] rounded-full object-cover border-2 border-black" /></div>
-          <span class="text-[11px] text-zinc-200 max-w-[66px] truncate">${st.profiles.username}</span>
-        `;
-        bar.appendChild(div);
-      });
+        const seenUsers = new Set();
+        (stories || []).forEach(st => {
+          if (seenUsers.has(st.user_id)) return;
+          seenUsers.add(st.user_id);
+          const div = document.createElement('div');
+          div.className = 'flex flex-col items-center gap-1 cursor-pointer shrink-0';
+          div.onclick = () => viewStory(st);
+          div.innerHTML = `
+            <div class="story-ring"><img src="${st.profiles?.avatar_url || currentProfile.avatar_url}" class="w-[60px] h-[60px] rounded-full object-cover border-2 border-black" /></div>
+            <span class="text-[11px] text-zinc-200 max-w-[66px] truncate">${st.profiles?.username || 'kullanici'}</span>
+          `;
+          bar.appendChild(div);
+        });
+      } catch (_) {}
     }
 
     document.getElementById('new-story-form').addEventListener('submit', async (e) => {
@@ -388,8 +389,8 @@
 
     function viewStory(story) {
       const viewer = document.getElementById('story-viewer');
-      document.getElementById('sv-avatar').src = story.profiles.avatar_url;
-      document.getElementById('sv-username').textContent = story.profiles.username;
+      document.getElementById('sv-avatar').src = story.profiles?.avatar_url || currentProfile.avatar_url;
+      document.getElementById('sv-username').textContent = story.profiles?.username || 'kullanici';
       document.getElementById('sv-image').src = story.image_url;
       viewer.classList.remove('hidden'); viewer.classList.add('flex');
       const prog = document.getElementById('story-progress');
@@ -406,48 +407,53 @@
     }
 
     async function loadFeed() {
-      const { data: posts } = await sb
-        .from('posts')
-        .select('*, profiles(username, avatar_url), likes(user_id), comments(id)')
-        .order('created_at', { ascending: false });
-
       const feed = document.getElementById('posts-feed');
-      feed.innerHTML = '';
+      try {
+        const { data: posts } = await sb
+          .from('posts')
+          .select('*, profiles(username, avatar_url), likes(user_id), comments(id)')
+          .order('created_at', { ascending: false });
 
-      if (!posts || posts.length === 0) {
-        feed.innerHTML = '<div class="p-10 text-center text-zinc-500 text-sm">Henüz gönderi yok. İlk gönderiyi sen paylaş!</div>';
-        return;
+        feed.innerHTML = '';
+        if (!posts || posts.length === 0) {
+          feed.innerHTML = '<div class="p-10 text-center text-zinc-500 text-sm">Henüz gönderi yok. İlk gönderiyi sen paylaş!</div>';
+          return;
+        }
+
+        posts.forEach(post => {
+          const likes = post.likes || [];
+          const comments = post.comments || [];
+          const isLiked = likes.some(l => l.user_id === currentUser.id);
+          const article = document.createElement('article');
+          article.className = 'pb-4';
+          article.innerHTML = `
+            <div class="flex items-center justify-between px-3.5 py-2.5">
+              <div class="flex items-center gap-2.5">
+                <img src="${post.profiles?.avatar_url || currentProfile.avatar_url}" class="w-8 h-8 rounded-full object-cover" />
+                <span class="font-semibold text-sm">${post.profiles?.username || 'kullanici'}</span>
+              </div>
+              ${post.user_id === currentUser.id ? `<button onclick="deletePost('${post.id}')" class="text-zinc-500 hover:text-red-500 text-xs"><i class="fa-solid fa-trash"></i></button>` : ''}
+            </div>
+            <div class="relative bg-zinc-950 flex items-center justify-center" ondblclick="toggleLike('${post.id}', true)">
+              <img src="${post.image_url}" class="w-full max-h-[520px] object-cover" />
+            </div>
+            <div class="px-3.5 pt-3">
+              <div class="flex items-center gap-4 text-2xl mb-2">
+                <button onclick="toggleLike('${post.id}')" class="${isLiked ? 'text-rose-500' : 'text-white'} hover:opacity-75 transition">
+                  <i class="${isLiked ? 'fa-solid' : 'fa-regular'} fa-heart"></i>
+                </button>
+                <button onclick="openComments('${post.id}')" class="hover:opacity-75 transition"><i class="fa-regular fa-comment"></i></button>
+              </div>
+              <div class="font-semibold text-sm mb-1">${likes.length} beğenme</div>
+              ${post.caption ? `<div class="text-sm"><span class="font-semibold mr-1.5">${post.profiles?.username || 'kullanici'}</span>${post.caption}</div>` : ''}
+              <button onclick="openComments('${post.id}')" class="text-xs text-zinc-500 mt-1 block">${comments.length} yorumun tümünü gör</button>
+            </div>
+          `;
+          feed.appendChild(article);
+        });
+      } catch (_) {
+        feed.innerHTML = '<div class="p-10 text-center text-zinc-500 text-sm">Akış şu an yüklenemedi.</div>';
       }
-
-      posts.forEach(post => {
-        const isLiked = post.likes.some(l => l.user_id === currentUser.id);
-        const article = document.createElement('article');
-        article.className = 'pb-4';
-        article.innerHTML = `
-          <div class="flex items-center justify-between px-3.5 py-2.5">
-            <div class="flex items-center gap-2.5">
-              <img src="${post.profiles.avatar_url}" class="w-8 h-8 rounded-full object-cover" />
-              <span class="font-semibold text-sm">${post.profiles.username}</span>
-            </div>
-            ${post.user_id === currentUser.id ? `<button onclick="deletePost('${post.id}')" class="text-zinc-500 hover:text-red-500 text-xs"><i class="fa-solid fa-trash"></i></button>` : ''}
-          </div>
-          <div class="relative bg-zinc-950 flex items-center justify-center" ondblclick="toggleLike('${post.id}', true)">
-            <img src="${post.image_url}" class="w-full max-h-[520px] object-cover" />
-          </div>
-          <div class="px-3.5 pt-3">
-            <div class="flex items-center gap-4 text-2xl mb-2">
-              <button onclick="toggleLike('${post.id}')" class="${isLiked ? 'text-rose-500' : 'text-white'} hover:opacity-75 transition">
-                <i class="${isLiked ? 'fa-solid' : 'fa-regular'} fa-heart"></i>
-              </button>
-              <button onclick="openComments('${post.id}')" class="hover:opacity-75 transition"><i class="fa-regular fa-comment"></i></button>
-            </div>
-            <div class="font-semibold text-sm mb-1">${post.likes.length} beğenme</div>
-            ${post.caption ? `<div class="text-sm"><span class="font-semibold mr-1.5">${post.profiles.username}</span>${post.caption}</div>` : ''}
-            <button onclick="openComments('${post.id}')" class="text-xs text-zinc-500 mt-1 block">${post.comments.length} yorumun tümünü gör</button>
-          </div>
-        `;
-        feed.appendChild(article);
-      });
     }
 
     document.getElementById('new-post-form').addEventListener('submit', async (e) => {
@@ -475,31 +481,35 @@
     }
 
     async function toggleLike(postId, forceLike = false) {
-      const { data: existing } = await sb.from('likes').select('id').eq('post_id', postId).eq('user_id', currentUser.id).maybeSingle();
-      if (existing && !forceLike) {
-        await sb.from('likes').delete().eq('id', existing.id);
-      } else if (!existing) {
-        await sb.from('likes').insert({ post_id: postId, user_id: currentUser.id });
-      }
-      loadFeed();
+      try {
+        const { data: existing } = await sb.from('likes').select('id').eq('post_id', postId).eq('user_id', currentUser.id).maybeSingle();
+        if (existing && !forceLike) {
+          await sb.from('likes').delete().eq('id', existing.id);
+        } else if (!existing) {
+          await sb.from('likes').insert({ post_id: postId, user_id: currentUser.id });
+        }
+        loadFeed();
+      } catch (_) {}
     }
 
     async function openComments(postId) {
       activePostIdForComments = postId;
       openModal('comments-modal');
-      const { data: comments } = await sb
-        .from('comments')
-        .select('*, profiles(username, avatar_url)')
-        .eq('post_id', postId)
-        .order('created_at', { ascending: true });
+      try {
+        const { data: comments } = await sb
+          .from('comments')
+          .select('*, profiles(username, avatar_url)')
+          .eq('post_id', postId)
+          .order('created_at', { ascending: true });
 
-      const list = document.getElementById('comments-list');
-      list.innerHTML = (comments || []).map(c => `
-        <div class="flex items-start gap-2.5 text-sm">
-          <img src="${c.profiles.avatar_url}" class="w-7 h-7 rounded-full object-cover mt-0.5" />
-          <div><span class="font-semibold mr-1.5">${c.profiles.username}</span><span class="text-zinc-300">${c.content}</span></div>
-        </div>
-      `).join('') || '<div class="text-center text-zinc-500 text-xs py-6">İlk yorumu sen yap!</div>';
+        const list = document.getElementById('comments-list');
+        list.innerHTML = (comments || []).map(c => `
+          <div class="flex items-start gap-2.5 text-sm">
+            <img src="${c.profiles?.avatar_url || currentProfile.avatar_url}" class="w-7 h-7 rounded-full object-cover mt-0.5" />
+            <div><span class="font-semibold mr-1.5">${c.profiles?.username || 'kullanici'}</span><span class="text-zinc-300">${c.content}</span></div>
+          </div>
+        `).join('') || '<div class="text-center text-zinc-500 text-xs py-6">İlk yorumu sen yap!</div>';
+      } catch (_) {}
     }
 
     document.getElementById('new-comment-form').addEventListener('submit', async (e) => {
@@ -514,37 +524,41 @@
     });
 
     async function searchUsers(query) {
-      let req = sb.from('profiles').select('*').neq('id', currentUser.id).limit(20);
-      if (query) req = req.ilike('username', `%${query}%`);
-      const { data: users } = await req;
       const res = document.getElementById('search-results');
-      res.innerHTML = (users || []).map(u => `
-        <div class="flex items-center justify-between bg-zinc-950 p-3 rounded-xl border border-zinc-900">
-          <div class="flex items-center gap-3">
-            <img src="${u.avatar_url}" class="w-11 h-11 rounded-full object-cover" />
-            <div>
-              <div class="font-semibold text-sm">${u.username}</div>
-              <div class="text-xs text-zinc-400">${u.full_name || ''}</div>
+      try {
+        let req = sb.from('profiles').select('*').neq('id', currentUser.id).limit(20);
+        if (query) req = req.ilike('username', `%${query}%`);
+        const { data: users } = await req;
+        res.innerHTML = (users || []).map(u => `
+          <div class="flex items-center justify-between bg-zinc-950 p-3 rounded-xl border border-zinc-900">
+            <div class="flex items-center gap-3">
+              <img src="${u.avatar_url}" class="w-11 h-11 rounded-full object-cover" />
+              <div>
+                <div class="font-semibold text-sm">${u.username}</div>
+                <div class="text-xs text-zinc-400">${u.full_name || ''}</div>
+              </div>
             </div>
+            <button onclick='startDM(${JSON.stringify(u)})' class="bg-pink-600 hover:bg-pink-700 text-xs font-semibold px-3.5 py-1.5 rounded-lg">Mesaj At</button>
           </div>
-          <button onclick='startDM(${JSON.stringify(u)})' class="bg-pink-600 hover:bg-pink-700 text-xs font-semibold px-3.5 py-1.5 rounded-lg">Mesaj At</button>
-        </div>
-      `).join('');
+        `).join('');
+      } catch (_) { res.innerHTML = ''; }
     }
 
     async function loadDMUsers() {
-      const { data: users } = await sb.from('profiles').select('*').neq('id', currentUser.id);
       const list = document.getElementById('dm-users-list');
-      list.innerHTML = (users || []).map(u => `
-        <div onclick='startDM(${JSON.stringify(u)})' class="flex items-center gap-3 p-2.5 hover:bg-zinc-900 rounded-xl cursor-pointer transition">
-          <img src="${u.avatar_url}" class="w-12 h-12 rounded-full object-cover" />
-          <div class="flex-1">
-            <div class="font-semibold text-sm">${u.username}</div>
-            <div class="text-xs text-zinc-400">Sohbeti açmak için dokun</div>
+      try {
+        const { data: users } = await sb.from('profiles').select('*').neq('id', currentUser.id);
+        list.innerHTML = (users || []).map(u => `
+          <div onclick='startDM(${JSON.stringify(u)})' class="flex items-center gap-3 p-2.5 hover:bg-zinc-900 rounded-xl cursor-pointer transition">
+            <img src="${u.avatar_url}" class="w-12 h-12 rounded-full object-cover" />
+            <div class="flex-1">
+              <div class="font-semibold text-sm">${u.username}</div>
+              <div class="text-xs text-zinc-400">Sohbeti açmak için dokun</div>
+            </div>
+            <i class="fa-regular fa-paper-plane text-zinc-500"></i>
           </div>
-          <i class="fa-regular fa-paper-plane text-zinc-500"></i>
-        </div>
-      `).join('') || '<div class="text-zinc-500 text-sm">Henüz başka kullanıcı kayıt olmamış.</div>';
+        `).join('') || '<div class="text-zinc-500 text-sm">Henüz başka kullanıcı yok.</div>';
+      } catch (_) { list.innerHTML = ''; }
     }
 
     async function startDM(user) {
@@ -568,22 +582,24 @@
 
     async function loadMessages() {
       if (!activeChatUser) return;
-      const { data: msgs } = await sb
-        .from('messages')
-        .select('*')
-        .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${activeChatUser.id}),and(sender_id.eq.${activeChatUser.id},receiver_id.eq.${currentUser.id})`)
-        .order('created_at', { ascending: true });
+      try {
+        const { data: msgs } = await sb
+          .from('messages')
+          .select('*')
+          .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${activeChatUser.id}),and(sender_id.eq.${activeChatUser.id},receiver_id.eq.${currentUser.id})`)
+          .order('created_at', { ascending: true });
 
-      const box = document.getElementById('chat-messages');
-      box.innerHTML = (msgs || []).map(m => {
-        const isMine = m.sender_id === currentUser.id;
-        return `
-          <div class="max-w-[75%] px-3.5 py-2 rounded-2xl text-sm ${isMine ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white self-end rounded-br-sm' : 'bg-zinc-900 text-zinc-100 self-start rounded-bl-sm'}">
-            ${m.content}
-          </div>
-        `;
-      }).join('');
-      box.scrollTop = box.scrollHeight;
+        const box = document.getElementById('chat-messages');
+        box.innerHTML = (msgs || []).map(m => {
+          const isMine = m.sender_id === currentUser.id;
+          return `
+            <div class="max-w-[75%] px-3.5 py-2 rounded-2xl text-sm ${isMine ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white self-end rounded-br-sm' : 'bg-zinc-900 text-zinc-100 self-start rounded-bl-sm'}">
+              ${m.content}
+            </div>
+          `;
+        }).join('');
+        box.scrollTop = box.scrollHeight;
+      } catch (_) {}
     }
 
     document.getElementById('chat-form').addEventListener('submit', async (e) => {
@@ -597,34 +613,40 @@
     });
 
     function subscribeRealtime() {
-      sb.channel('amorgram-realtime')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
-          const msg = payload.new;
-          if (msg.receiver_id === currentUser.id || msg.sender_id === currentUser.id) {
-            if (activeChatUser && (msg.sender_id === activeChatUser.id || msg.receiver_id === activeChatUser.id)) {
-              loadMessages();
-            } else if (msg.receiver_id === currentUser.id) {
-              document.getElementById('dm-badge').classList.remove('hidden');
+      try {
+        sb.channel('amorgram-realtime')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+            const msg = payload.new;
+            if (msg.receiver_id === currentUser.id || msg.sender_id === currentUser.id) {
+              if (activeChatUser && (msg.sender_id === activeChatUser.id || msg.receiver_id === activeChatUser.id)) {
+                loadMessages();
+              } else if (msg.receiver_id === currentUser.id) {
+                document.getElementById('dm-badge').classList.remove('hidden');
+              }
             }
-          }
-        })
-        .subscribe();
+          })
+          .subscribe();
+      } catch (_) {}
     }
 
     async function loadMyProfile() {
-      const { data: profile } = await sb.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
-      currentProfile = profile || currentProfile;
+      try {
+        const { data: profile } = await sb.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+        if (profile) currentProfile = { ...currentProfile, ...profile };
+      } catch (_) {}
       document.getElementById('prof-header-username').textContent = currentProfile.username;
       document.getElementById('prof-avatar').src = currentProfile.avatar_url;
       document.getElementById('nav-avatar').src = currentProfile.avatar_url;
       document.getElementById('prof-fullname').textContent = currentProfile.full_name;
       document.getElementById('prof-bio').textContent = currentProfile.bio;
 
-      const { data: myPosts } = await sb.from('posts').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
-      document.getElementById('prof-post-count').textContent = (myPosts || []).length;
-      document.getElementById('prof-posts-grid').innerHTML = (myPosts || []).map(p => `
-        <div class="aspect-square bg-zinc-900 overflow-hidden"><img src="${p.image_url}" class="w-full h-full object-cover" /></div>
-      `).join('');
+      try {
+        const { data: myPosts } = await sb.from('posts').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
+        document.getElementById('prof-post-count').textContent = (myPosts || []).length;
+        document.getElementById('prof-posts-grid').innerHTML = (myPosts || []).map(p => `
+          <div class="aspect-square bg-zinc-900 overflow-hidden"><img src="${p.image_url}" class="w-full h-full object-cover" /></div>
+        `).join('');
+      } catch (_) {}
     }
 
     function openEditProfile() {
