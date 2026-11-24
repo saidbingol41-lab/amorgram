@@ -20,7 +20,6 @@
 
   <div id="auth-screen" class="w-full max-w-[400px] min-h-screen flex flex-col justify-center px-6 py-8">
     <div class="border border-zinc-800 bg-zinc-950/60 rounded-xl p-8 flex flex-col items-center">
-      <img src="logo.png" alt="Amorgram" class="w-24 h-24 object-contain mb-3 drop-shadow-[0_0_15px_rgba(236,72,153,0.5)]" onerror="this.style.display='none'" />
       <h1 class="text-3xl font-bold tracking-tight bg-gradient-to-r from-purple-400 via-pink-500 to-rose-500 bg-clip-text text-transparent mb-6">amorgram</h1>
 
       <form id="login-form" class="w-full space-y-3">
@@ -49,7 +48,6 @@
   <div id="app-screen" class="w-full max-w-[470px] min-h-screen border-x border-zinc-900 hidden flex-col pb-16 relative">
     <header class="sticky top-0 z-30 glass-nav border-b border-zinc-900 px-4 h-14 flex items-center justify-between">
       <div class="flex items-center gap-2 cursor-pointer" onclick="switchTab('feed')">
-        <img src="logo.png" class="w-7 h-7 object-contain" onerror="this.style.display='none'" />
         <span class="text-xl font-bold tracking-tight bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">amorgram</span>
       </div>
       <div class="flex items-center gap-5 text-xl">
@@ -217,14 +215,14 @@
 
     window.addEventListener('DOMContentLoaded', async () => {
       const { data: { session } } = await sb.auth.getSession();
-      if (session && session.user.email_confirmed_at) {
+      if (session && session.user) {
         initApp(session.user);
       } else {
         document.getElementById('auth-screen').classList.remove('hidden');
       }
 
       sb.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_IN' && session?.user?.email_confirmed_at) {
+        if (event === 'SIGNED_IN' && session?.user) {
           initApp(session.user);
         } else if (event === 'SIGNED_OUT') {
           location.reload();
@@ -269,7 +267,11 @@
       });
 
       if (error) return showAuthMsg(error.message);
-      showAuthMsg('Kayıt başarılı! Şimdi e-posta kutuna gelen doğrulama bağlantısına tıkla, ardından giriş yap.', false);
+      if (data.session && data.user) {
+        initApp(data.user);
+      } else {
+        showAuthMsg('Kayıt başarılı! E-posta doğrulama açıksa mailindeki bağlantıya tıkla, ardından giriş yap.', false);
+      }
     });
 
     document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -285,10 +287,6 @@
 
       const { data, error } = await sb.auth.signInWithPassword({ email: identifier, password });
       if (error) return showAuthMsg('Kullanıcı adı/şifre hatalı veya mail adresin henüz doğrulanmamış!');
-      if (!data.user.email_confirmed_at) {
-        await sb.auth.signOut();
-        return showAuthMsg('Giriş yapabilmek için önce mailine gelen doğrulama linkine tıklamalısın!');
-      }
       initApp(data.user);
     });
 
@@ -300,9 +298,16 @@
       document.getElementById('app-screen').classList.remove('hidden');
       document.getElementById('app-screen').classList.add('flex');
 
-      const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).single();
-      currentProfile = profile;
-      document.getElementById('nav-avatar').src = profile.avatar_url;
+      const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
+      currentProfile = profile || {
+        id: user.id,
+        email: user.email,
+        username: user.email.split('@')[0],
+        full_name: '',
+        avatar_url: 'https://placehold.co/150x150/18181b/ec4899?text=A',
+        bio: ''
+      };
+      document.getElementById('nav-avatar').src = currentProfile.avatar_url;
 
       loadStories();
       loadFeed();
@@ -607,13 +612,13 @@
     }
 
     async function loadMyProfile() {
-      const { data: profile } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
-      currentProfile = profile;
-      document.getElementById('prof-header-username').textContent = profile.username;
-      document.getElementById('prof-avatar').src = profile.avatar_url;
-      document.getElementById('nav-avatar').src = profile.avatar_url;
-      document.getElementById('prof-fullname').textContent = profile.full_name;
-      document.getElementById('prof-bio').textContent = profile.bio;
+      const { data: profile } = await sb.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+      currentProfile = profile || currentProfile;
+      document.getElementById('prof-header-username').textContent = currentProfile.username;
+      document.getElementById('prof-avatar').src = currentProfile.avatar_url;
+      document.getElementById('nav-avatar').src = currentProfile.avatar_url;
+      document.getElementById('prof-fullname').textContent = currentProfile.full_name;
+      document.getElementById('prof-bio').textContent = currentProfile.bio;
 
       const { data: myPosts } = await sb.from('posts').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
       document.getElementById('prof-post-count').textContent = (myPosts || []).length;
